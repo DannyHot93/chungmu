@@ -7,6 +7,7 @@
 
 import { useMemo, useState } from "react";
 import { readApiJson } from "@/lib/readApiJson";
+import IndeterminateLoadProgress from "./IndeterminateLoadProgress";
 import {
   formatDurationKorean,
   formatSecondsClock,
@@ -273,9 +274,12 @@ export default function ProgramPlannerSection() {
       )}
 
       {loading && (
-        <div className="flex flex-col items-center justify-center gap-3 py-12 text-zinc-500">
-          <div className="h-10 w-10 animate-spin rounded-full border-2 border-[#4764e6] border-t-transparent" />
-          <p className="text-sm font-semibold text-zinc-300">AI 선곡 후 YouTube 매칭 중…</p>
+        <div className="mb-4 py-1">
+          <IndeterminateLoadProgress
+            active={loading}
+            label="AI 선곡 후 YouTube 매칭 중"
+            tau={65_000}
+          />
         </div>
       )}
 

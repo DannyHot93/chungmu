@@ -5,10 +5,11 @@
 // ======================================================
 
 import type { VocalMode } from "@/types";
-import { mapKoreanToEnglishPromptForPro } from "./koreanPromptMapper";
+import { resolveLyria3ProEnglishPrompt } from "./lyriaPromptResolve";
 
 const MODEL = "lyria-3-pro-preview";
 const BASE = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+const LYRIA3_FETCH_TIMEOUT_MS = 300_000;
 
 export interface Lyria3GeminiResult {
   audioBase64: string;
@@ -74,17 +75,34 @@ export async function generateMusicLyria3ProRaw(
 ): Promise<Lyria3GeminiResult> {
   const apiKey = getApiKey();
 
-  const res = await fetch(BASE, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": apiKey,
-    },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { responseModalities: ["AUDIO", "TEXT"] },
-    }),
-  });
+  const signal =
+    typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+      ? AbortSignal.timeout(LYRIA3_FETCH_TIMEOUT_MS)
+      : undefined;
+
+  let res: Response;
+  try {
+    res = await fetch(BASE, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey,
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseModalities: ["AUDIO", "TEXT"] },
+      }),
+      signal,
+    });
+  } catch (e: unknown) {
+    const name = e instanceof Error ? e.name : "";
+    if (name === "AbortError" || name === "TimeoutError") {
+      throw new Error(
+        `Lyria 3 Pro가 ${Math.round(LYRIA3_FETCH_TIMEOUT_MS / 1000)}초 안에 응답하지 않았습니다. 잠시 후 다시 시도하세요.`
+      );
+    }
+    throw e;
+  }
 
   const rawText = await res.text();
   if (!res.ok) {
@@ -121,6 +139,6 @@ export async function generateMusicLyria3Pro(
   koreanInput: string,
   vocalMode: VocalMode = "instrumental"
 ): Promise<Lyria3GeminiResult> {
-  const englishPrompt = mapKoreanToEnglishPromptForPro(koreanInput, vocalMode);
+  const englishPrompt = await resolveLyria3ProEnglishPrompt(koreanInput, vocalMode);
   return generateMusicLyria3ProRaw(englishPrompt, koreanInput);
 }

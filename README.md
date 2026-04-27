@@ -44,11 +44,15 @@ npm run build
 - `SPOTIFY_CLIENT_ID` 선택
 - `SPOTIFY_CLIENT_SECRET` 선택
 
-Google Vertex 기반 짧은 음악 생성은 Application Default Credentials도 필요합니다.
+**짧은 음악(Lyria 2 · Vertex AI)** 은 Google Cloud 자격 증명이 필요합니다.
 
-```bash
-gcloud auth application-default login
-```
+- **로컬:** `gcloud auth application-default login`  
+  또는 `GOOGLE_APPLICATION_CREDENTIALS=/절대/경로/서비스계정.json`
+- **Vercel·서버:** ADC가 없으므로 **서비스 계정 키**를 환경 변수로 넣습니다. (필수)
+  - `GOOGLE_APPLICATION_CREDENTIALS_JSON` — 키 JSON **전문** (한 줄로 붙여넣기 권장)
+  - 또는 `GOOGLE_APPLICATION_CREDENTIALS_BASE64` — `base64 -i key.json | tr -d '\n'` 결과
+
+IAM에서 서비스 계정에 **Vertex AI User**(`roles/aiplatform.user`) 등 Vertex 호출 권한을 부여하고, `GOOGLE_CLOUD_PROJECT_ID`가 키의 `project_id`와 맞는지 확인합니다.
 
 ## Project Structure
 

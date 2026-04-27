@@ -3,10 +3,12 @@
 // 1순위: gemini-3-flash-preview, 실패·결과 부적합 시: gemini-2.5-flash
 // ======================================================
 
-import type { ProgramCondition, SongRecommendation } from "@/types";
+import type { ProgramCondition, SongRecommendation, VocalMode } from "@/types";
 
 const MODEL_PRIMARY = "gemini-3-flash-preview";
 const MODEL_FALLBACK = "gemini-2.5-flash";
+/** Lyria 한→영 스타일 변환 전용 (사용자 규칙: gemini-2.5-flash) */
+const MODEL_LYRIA_KO_EN = "gemini-2.5-flash";
 
 const SONG_ROLES = ["오프닝", "브릿지", "배경", "엔딩", "일반"] as const;
 
@@ -84,6 +86,8 @@ type JsonAttemptResult =
   | { ok: true; text: string; parsed: Record<string, unknown> }
   | { ok: false; reason: string };
 
+const GEMINI_JSON_FETCH_TIMEOUT_MS = 22_000;
+
 /** 단일 모델로 generateContent (JSON) */
 async function tryGenerateContentJson(
   model: string,
@@ -93,26 +97,44 @@ async function tryGenerateContentJson(
   temperature: number
 ): Promise<JsonAttemptResult> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": apiKey,
-    },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemText }] },
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: userText }],
-        },
-      ],
-      generationConfig: {
-        temperature,
-        responseMimeType: "application/json",
+  const signal =
+    typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+      ? AbortSignal.timeout(GEMINI_JSON_FETCH_TIMEOUT_MS)
+      : undefined;
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey,
       },
-    }),
-  });
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemText }] },
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: userText }],
+          },
+        ],
+        generationConfig: {
+          temperature,
+          responseMimeType: "application/json",
+        },
+      }),
+      signal,
+    });
+  } catch (e: unknown) {
+    const name = e instanceof Error ? e.name : "";
+    if (name === "AbortError" || name === "TimeoutError") {
+      return {
+        ok: false,
+        reason: `Gemini 응답 대기 ${Math.round(GEMINI_JSON_FETCH_TIMEOUT_MS / 1000)}초 초과`,
+      };
+    }
+    throw e;
+  }
 
   const raw = await res.text();
   if (!res.ok) {
@@ -186,6 +208,57 @@ export async function runGeminiStructuredJson(
   throw new Error(
     `Gemini 호출 실패 (${MODEL_PRIMARY} / ${MODEL_FALLBACK}): ${!primary.ok ? primary.reason : fallback.reason}`
   );
+}
+
+/**
+ * 한국어 분위기·느낌 설명 → Lyria용 영어 음악 연출 문장 (JSON의 direction)
+ * 실패 시 호출부에서 룰 기반 mapKoreanToEnglishPrompt로 폴백
+ */
+export async function koreanMoodToLyriaEnglishCore(
+  koreanText: string,
+  vocalMode: VocalMode
+): Promise<string> {
+  const trimmed = koreanText.trim();
+  if (!trimmed) {
+    throw new Error("empty");
+  }
+  const apiKey = getGeminiApiKey();
+  const mixHint =
+    vocalMode === "vocals"
+      ? "The track should feature a clear lead vocal (singer) with balanced backing; describe how the voice should feel along with the band."
+      : "Instrumental only: no lead singer; describe texture, harmony, rhythm, and sound design only.";
+
+  const system = `You help with music production briefs for Google Lyria (original music generation only).
+The user writes in Korean (any phrasing: mood, scene, broadcast use, feelings). You must understand the intent and express it as English music direction.
+
+Output JSON only, one key "direction":
+{ "direction": "<string>" }
+
+Rules for "direction":
+- English only. 2–5 sentences or one rich paragraph.
+- Use music vocabulary: mood, energy, tempo feel, texture, instruments/synths, genre flavor, spatial feel, dynamics. For broadcast/BGM/radio if implied.
+- ${mixHint}
+- Do not name real artists, bands, songs, or trademarks. Never say "like [someone]".
+- Do not output Korean inside "direction".`;
+
+  const user = `Korean brief:\n${trimmed}`;
+
+  const attempt = await tryGenerateContentJson(
+    MODEL_LYRIA_KO_EN,
+    apiKey,
+    system,
+    user,
+    0.55
+  );
+  if (!attempt.ok) {
+    throw new Error(attempt.reason);
+  }
+  const d = attempt.parsed.direction;
+  const out = typeof d === "string" ? d.trim() : "";
+  if (out.length < 12) {
+    throw new Error("direction too short");
+  }
+  return out;
 }
 
 // 라디오 프로그램 선곡 추천 생성

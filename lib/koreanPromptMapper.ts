@@ -195,9 +195,28 @@ export function mapKoreanToEnglishPrompt(
   return `${core}${ORIGINALITY_SUFFIX} ${vocalModeClause(vocalMode)}`;
 }
 
+/**
+ * LLM이 만든 영어 core(또는 룰 기반 core) + 정책용 접미사 — Lyria 2/3 Pro 공통
+ * @param englishCore - 빈 문자열이면 룰 기반 fallbackCore 사용
+ */
+export function buildLyria2FinalFromCore(
+  englishCore: string,
+  vocalMode: VocalMode = "instrumental"
+): string {
+  const core = englishCore.trim() || fallbackCore(vocalMode);
+  return `${core}${ORIGINALITY_SUFFIX} ${vocalModeClause(vocalMode)}`.trim();
+}
+
 /** Lyria 3 Pro: 길이·믹스 힌트 (부정 프롬프트 없음) */
 const LYRIA3_PRO_EXTRA =
   " Professional broadcast-ready mix, clear sections, approximately two minutes, rich dynamics.";
+
+export function buildLyria3ProFinalFromCore(
+  englishCore: string,
+  vocalMode: VocalMode = "instrumental"
+): string {
+  return `${buildLyria2FinalFromCore(englishCore, vocalMode)} ${LYRIA3_PRO_EXTRA}`.trim();
+}
 
 export function mapKoreanToEnglishPromptForPro(
   koreanInput: string,

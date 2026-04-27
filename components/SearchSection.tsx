@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { readApiJson } from "@/lib/readApiJson";
+import IndeterminateLoadProgress from "./IndeterminateLoadProgress";
 import MusicListRow from "./MusicListRow";
 import YouTubePlayerModal from "./YouTubePlayerModal";
 import type { MusicSearchResultItem, YouTubeVideo } from "@/types";
@@ -118,9 +119,12 @@ export default function SearchSection() {
       )}
 
       {loading && (
-        <div className="flex flex-col items-center justify-center gap-3 py-12 text-sm text-zinc-500">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#4764e6] border-t-transparent" />
-          AI 선곡 후 YouTube 매칭 중…
+        <div className="mb-4 py-2">
+          <IndeterminateLoadProgress
+            active={loading}
+            label="AI 선곡 후 YouTube 매칭 중"
+            tau={45_000}
+          />
         </div>
       )}
 

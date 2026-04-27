@@ -4,12 +4,8 @@
 // AI 음악 생성: 짧은 클립 / 긴·고퀄
 // ======================================================
 
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { readApiJson } from "@/lib/readApiJson";
-import {
-  mapKoreanToEnglishPrompt,
-  mapKoreanToEnglishPromptForPro,
-} from "@/lib/koreanPromptMapper";
 import type { VocalMode } from "@/types";
 
 type LyricsLanguage = "ko" | "en";
@@ -30,70 +26,6 @@ Every step feels new and right
 This is our song, forever strong
 Carrying us where we belong`;
 
-/** 클라이언트용 보컬 프롬프트 미리보기 (서버 buildLyria3VocalPrompt와 동일 구조) */
-function buildVocalPromptPreview(
-  keyword: string,
-  lyrics: string,
-  lang: LyricsLanguage
-): string {
-  if (lang === "en") {
-    const safeLyrics = lyrics.trim() || DEFAULT_EN_PLACEHOLDER;
-    return `Create an original English pop vocal song with a clear lead vocal.
-
-Language: English.
-
-Style:
-${keyword}
-
-Vocal direction:
-Clear English lead vocal. Natural English pronunciation.
-Melodic singing, not spoken narration.
-The verse starts with a vocal melody. The chorus has a catchy English vocal hook.
-
-Music direction:
-Modern pop production. Warm, polished, broadcast-friendly.
-
-Lyrics:
-${safeLyrics}
-
-Structure:
-[Intro] short instrumental intro
-[Verse] English lead vocal begins
-[Chorus] memorable English vocal hook
-[Outro] short ending
-
-Artist guidance:
-Original song only. Do not imitate any real artist or existing song.`.trim();
-  }
-  const safeLyrics = lyrics.trim() || DEFAULT_KO_PLACEHOLDER;
-  return `Create an original Korean vocal song with a clear lead vocal.
-
-Language: Korean.
-
-Style:
-${keyword}
-
-Vocal direction:
-Clear Korean lead vocal. Natural Korean pronunciation.
-Melodic singing, not spoken narration.
-The verse starts with a Korean vocal. The chorus has a memorable Korean vocal hook.
-
-Music direction:
-Modern Korean pop production. Warm, polished, broadcast-friendly.
-
-Lyrics:
-${safeLyrics}
-
-Structure:
-[Intro] short instrumental intro
-[Verse] Korean lead vocal begins
-[Chorus] memorable Korean vocal hook
-[Outro] short ending
-
-Artist guidance:
-Original song only. Do not imitate any real artist or existing song.`.trim();
-}
-
 type Mode = "short" | "long";
 
 const EXAMPLE_KEYWORDS = [
@@ -104,16 +36,27 @@ const EXAMPLE_KEYWORDS = [
   "서서히 올라가는 긴장감",
 ];
 
-/** API 진행률 미제공 → 모드별 체감 속도로 진행률 표시 */
+/**
+ * API 진행률 미제공 → 체감 진행률.
+ * 짧은 음악은 tau를 짧게 해 초반에 막대가 더 빨리 움직이게 함(대기 체감 완화).
+ */
 function estimateProgressPercent(
   startedAt: number,
   mode: Mode,
-  maxBeforeDone = 92
+  maxBeforeDone = 98
 ): number {
   const elapsed = Date.now() - startedAt;
-  const tau = mode === "long" ? 95000 : 22000;
-  const p = (1 - Math.exp(-elapsed / tau)) * maxBeforeDone;
-  return Math.min(maxBeforeDone, p);
+  const isLong = mode === "long";
+  const tau = isLong ? 88_000 : 8_500;
+  const tau2 = tau * 3.5;
+  const base =
+    70 * (1 - Math.exp(-elapsed / tau)) +
+    24 * (1 - Math.exp(-elapsed / tau2));
+  const crawlStart = isLong ? 40_000 : 12_000;
+  const crawlCap = isLong ? 8 : 10;
+  const crawlRate = isLong ? 0.00005 : 0.00009;
+  const crawl = Math.min(crawlCap, Math.max(0, elapsed - crawlStart) * crawlRate);
+  return Math.min(maxBeforeDone, base + crawl);
 }
 
 function extensionForMime(mime: string | undefined): string {
@@ -150,11 +93,11 @@ export default function GenerateSection() {
     modeRef.current = mode;
   }, [mode]);
 
+  // 진행률 시각: 반드시 handleGenerate에서 loadStartedAtRef를 먼저 찍는다.
+  // (React 18 Strict Mode로 이 effect가 두 번 돌 때, 여기서 시각/0%를 다시 잡으면 막대가 0%로 돌아가
+  //  "진행이 안 된다"처럼 보이는 원인이 됨)
   useEffect(() => {
     if (!loading) return;
-
-    loadStartedAtRef.current = Date.now();
-    setProgressPercent(0);
 
     const tick = () => {
       if (document.visibilityState === "hidden") return;
@@ -163,8 +106,8 @@ export default function GenerateSection() {
       );
     };
 
-    // 500ms 간격 — 120ms 대비 렌더링 4배 절감
-    progressTimerRef.current = setInterval(tick, 500);
+    tick();
+    progressTimerRef.current = setInterval(tick, 200);
 
     return () => {
       if (progressTimerRef.current) {
@@ -221,8 +164,13 @@ export default function GenerateSection() {
     setUsedRetryPrompt(false);
     setGeneratedModel(null);
     setResultVocalMode(null);
+    loadStartedAtRef.current = Date.now();
     setLoading(true);
     setProgressPercent(0);
+
+    const clientAbortMs = 4 * 60 * 1000;
+    const ac = new AbortController();
+    const abortTimer = setTimeout(() => ac.abort(), clientAbortMs);
 
     try {
       const res = await fetch("/api/generate-music", {
@@ -235,6 +183,7 @@ export default function GenerateSection() {
           lyrics: lyrics.trim(),
           lyricsLanguage,
         }),
+        signal: ac.signal,
       });
       const data = await readApiJson<{
         audioUrl?: string;        // Blob URL (서버에서 업로드 성공 시)
@@ -286,8 +235,15 @@ export default function GenerateSection() {
     } catch (err: unknown) {
       stopProgressTimer();
       setProgressPercent(0);
-      setError(err instanceof Error ? err.message : "음악 생성 중 오류가 발생했습니다.");
+      if (err instanceof Error && err.name === "AbortError") {
+        setError(
+          "요청이 4분 안에 끝나지 않았습니다. 배포 환경(Vercel 등)의 함수 실행 시간 제한·네트워크를 확인하세요."
+        );
+      } else {
+        setError(err instanceof Error ? err.message : "음악 생성 중 오류가 발생했습니다.");
+      }
     } finally {
+      clearTimeout(abortTimer);
       setLoading(false);
       clearProgressResetTimer();
       progressResetTimerRef.current = setTimeout(() => setProgressPercent(0), 600);
@@ -311,19 +267,6 @@ export default function GenerateSection() {
   };
 
   const barWidth = `${Math.round(Math.min(100, progressPercent))}%`;
-
-  /** 서버에서 Lyria에 넣는 프롬프트와 동일(재시도 전) */
-  const promptPreview = useMemo(() => {
-    const k = keyword.trim();
-    if (!k) return null;
-    if (mode === "long" && vocalMode === "vocals") {
-      return buildVocalPromptPreview(k, lyrics, lyricsLanguage);
-    }
-    if (mode === "long") {
-      return mapKoreanToEnglishPromptForPro(k, vocalMode);
-    }
-    return mapKoreanToEnglishPrompt(k, vocalMode);
-  }, [keyword, mode, vocalMode, lyrics, lyricsLanguage]);
 
   return (
     <section className="text-zinc-200">
@@ -487,21 +430,6 @@ export default function GenerateSection() {
             {kw}
           </button>
         ))}
-      </div>
-
-      <div className="mb-5 rounded border border-zinc-600 bg-zinc-950/60 p-3">
-        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-          Lyria 프롬프트 · 미리보기
-        </p>
-        {promptPreview ? (
-          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-zinc-700 bg-black/40 p-2.5 text-xs leading-relaxed text-[#9cb0f5]">
-            {promptPreview}
-          </pre>
-        ) : (
-          <p className="rounded border border-dashed border-zinc-700 bg-black/20 px-2 py-3 text-center text-xs text-zinc-500">
-            키워드를 입력하면 위와 같은 규칙으로 변환된 프롬프트가 여기에 표시됩니다.
-          </p>
-        )}
       </div>
 
       {loading && (
