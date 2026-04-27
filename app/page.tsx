@@ -1,65 +1,77 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+// ======================================================
+// 메인 — 배경 #000 / 메뉴 #4764e6 (MBC 계열 톤)
+// ======================================================
+
+import { useState } from "react";
+import Header from "@/components/Header";
+import SearchSection from "@/components/SearchSection";
+import GenerateSection from "@/components/GenerateSection";
+import ProgramPlannerSection from "@/components/ProgramPlannerSection";
+
+type Tab = "search" | "generate" | "planner";
+
+const TABS: { id: Tab; label: string; sub: string; icon: string }[] = [
+  { id: "search", label: "음악 검색", sub: "AI→YouTube", icon: "🔍" },
+  { id: "generate", label: "AI 음악 생성", sub: "Lyria", icon: "🎼" },
+  { id: "planner", label: "라디오 선곡", sub: "AI 기획", icon: "📻" },
+];
+
+export default function HomePage() {
+  const [activeTab, setActiveTab] = useState<Tab>("search");
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="min-h-screen bg-black text-zinc-200">
+      <Header />
+
+      <nav className="border-b border-[#3d56c9] bg-[#4764e6]">
+        <div className="mx-auto flex max-w-6xl overflow-x-auto px-4">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex-shrink-0 border-b-2 px-5 py-3 text-sm font-semibold transition-colors ${
+                activeTab === tab.id
+                  ? "border-white bg-[#3d56c9] text-white"
+                  : "border-transparent text-white/85 hover:bg-white/10 hover:text-white"
+              }`}
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              <span className="hidden sm:inline mr-1">{tab.icon}</span>
+              <span>{tab.label}</span>
+              <span className="hidden md:inline ml-1 text-xs font-normal opacity-80">
+                ({tab.sub})
+              </span>
+            </button>
+          ))}
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      </nav>
+
+      <main className="mx-auto max-w-6xl px-4 py-6">
+        <div className="rounded-lg border border-zinc-800 bg-zinc-950/90 shadow-xl">
+          <div className="border-b border-zinc-800 px-5 py-4">
+            <div className="flex items-center gap-3">
+              <div className="h-6 w-1 rounded bg-[#4764e6]" />
+              <div>
+                <h2 className="text-base font-bold text-white">
+                  {TABS.find((t) => t.id === activeTab)?.label}
+                </h2>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-5">
+            {activeTab === "search" && <SearchSection />}
+            {activeTab === "generate" && <GenerateSection />}
+            {activeTab === "planner" && <ProgramPlannerSection />}
+          </div>
         </div>
       </main>
+
+      <footer className="mt-4 border-t border-zinc-800 py-6 text-center text-xs text-zinc-600">
+        <p>© 충뮤 · 내부 업무용</p>
+        <p className="mt-1">YouTube · Lyria 2 / Lyria 3 Pro · Gemini</p>
+      </footer>
     </div>
   );
 }

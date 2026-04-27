@@ -1,0 +1,22 @@
+{
+  "name": "충뮤",
+  "short_name": "충뮤",
+  "description": "방송용 음악 검색 · AI 음악 생성 · 라디오 선곡",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#4764e6",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

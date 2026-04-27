@@ -1,0 +1,579 @@
+"use client";
+
+// ======================================================
+// AI 음악 생성: 짧은 클립 / 긴·고퀄
+// ======================================================
+
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { readApiJson } from "@/lib/readApiJson";
+import {
+  mapKoreanToEnglishPrompt,
+  mapKoreanToEnglishPromptForPro,
+} from "@/lib/koreanPromptMapper";
+import type { VocalMode } from "@/types";
+
+type LyricsLanguage = "ko" | "en";
+
+const DEFAULT_KO_PLACEHOLDER = `[Verse]
+오늘도 조용히 빛나는 하루
+바람에 실려 온 작은 마음
+
+[Chorus]
+지금 이 순간 너에게 닿아
+우리의 노래가 시작돼`;
+
+const DEFAULT_EN_PLACEHOLDER = `[Verse]
+Walking through the morning light
+Every step feels new and right
+
+[Chorus]
+This is our song, forever strong
+Carrying us where we belong`;
+
+/** 클라이언트용 보컬 프롬프트 미리보기 (서버 buildLyria3VocalPrompt와 동일 구조) */
+function buildVocalPromptPreview(
+  keyword: string,
+  lyrics: string,
+  lang: LyricsLanguage
+): string {
+  if (lang === "en") {
+    const safeLyrics = lyrics.trim() || DEFAULT_EN_PLACEHOLDER;
+    return `Create an original English pop vocal song with a clear lead vocal.
+
+Language: English.
+
+Style:
+${keyword}
+
+Vocal direction:
+Clear English lead vocal. Natural English pronunciation.
+Melodic singing, not spoken narration.
+The verse starts with a vocal melody. The chorus has a catchy English vocal hook.
+
+Music direction:
+Modern pop production. Warm, polished, broadcast-friendly.
+
+Lyrics:
+${safeLyrics}
+
+Structure:
+[Intro] short instrumental intro
+[Verse] English lead vocal begins
+[Chorus] memorable English vocal hook
+[Outro] short ending
+
+Artist guidance:
+Original song only. Do not imitate any real artist or existing song.`.trim();
+  }
+  const safeLyrics = lyrics.trim() || DEFAULT_KO_PLACEHOLDER;
+  return `Create an original Korean vocal song with a clear lead vocal.
+
+Language: Korean.
+
+Style:
+${keyword}
+
+Vocal direction:
+Clear Korean lead vocal. Natural Korean pronunciation.
+Melodic singing, not spoken narration.
+The verse starts with a Korean vocal. The chorus has a memorable Korean vocal hook.
+
+Music direction:
+Modern Korean pop production. Warm, polished, broadcast-friendly.
+
+Lyrics:
+${safeLyrics}
+
+Structure:
+[Intro] short instrumental intro
+[Verse] Korean lead vocal begins
+[Chorus] memorable Korean vocal hook
+[Outro] short ending
+
+Artist guidance:
+Original song only. Do not imitate any real artist or existing song.`.trim();
+}
+
+type Mode = "short" | "long";
+
+const EXAMPLE_KEYWORDS = [
+  "차분하고 잔잔한 배경",
+  "몽환적인 새벽 분위기",
+  "부드러운 희망 느낌",
+  "가벼운 리듬과 따뜻한 패드",
+  "서서히 올라가는 긴장감",
+];
+
+/** API 진행률 미제공 → 모드별 체감 속도로 진행률 표시 */
+function estimateProgressPercent(
+  startedAt: number,
+  mode: Mode,
+  maxBeforeDone = 92
+): number {
+  const elapsed = Date.now() - startedAt;
+  const tau = mode === "long" ? 95000 : 22000;
+  const p = (1 - Math.exp(-elapsed / tau)) * maxBeforeDone;
+  return Math.min(maxBeforeDone, p);
+}
+
+function extensionForMime(mime: string | undefined): string {
+  if (!mime) return "wav";
+  if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
+  if (mime.includes("wav")) return "wav";
+  return "audio";
+}
+
+export default function GenerateSection() {
+  const [keyword, setKeyword] = useState("");
+  const [mode, setMode] = useState<Mode>("short");
+  const [vocalMode, setVocalMode] = useState<VocalMode>("instrumental");
+  const [lyrics, setLyrics] = useState("");
+  const [lyricsLanguage, setLyricsLanguage] = useState<LyricsLanguage>("ko");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioMimeType, setAudioMimeType] = useState<string>("audio/wav");
+  const [promptUsed, setPromptUsed] = useState("");
+  const [koreanInput, setKoreanInput] = useState("");
+  const [usedRetryPrompt, setUsedRetryPrompt] = useState(false);
+  const [generatedModel, setGeneratedModel] = useState<"lyria2" | "lyria3pro" | null>(null);
+  const [resultVocalMode, setResultVocalMode] = useState<VocalMode | null>(null);
+  const [progressPercent, setProgressPercent] = useState(0);
+
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const progressResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadStartedAtRef = useRef<number>(0);
+  const modeRef = useRef<Mode>("short");
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
+  useEffect(() => {
+    if (!loading) return;
+
+    loadStartedAtRef.current = Date.now();
+    setProgressPercent(0);
+
+    const tick = () => {
+      if (document.visibilityState === "hidden") return;
+      setProgressPercent(
+        estimateProgressPercent(loadStartedAtRef.current, modeRef.current)
+      );
+    };
+
+    // 500ms 간격 — 120ms 대비 렌더링 4배 절감
+    progressTimerRef.current = setInterval(tick, 500);
+
+    return () => {
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+    };
+  }, [loading]);
+
+  const stopProgressTimer = useCallback(() => {
+    if (progressTimerRef.current) {
+      clearInterval(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
+  }, []);
+
+  const clearProgressResetTimer = useCallback(() => {
+    if (progressResetTimerRef.current) {
+      clearTimeout(progressResetTimerRef.current);
+      progressResetTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopProgressTimer();
+      clearProgressResetTimer();
+    };
+  }, [clearProgressResetTimer, stopProgressTimer]);
+
+  // Blob URL은 revokeObjectURL 대상이 아님 — 외부 URL 구분을 위해 플래그 추가
+  const [isBlobUrl, setIsBlobUrl] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (audioUrl && isBlobUrl) {
+        URL.revokeObjectURL(audioUrl);
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioUrl]);
+
+  const handleGenerate = async (overrideKeyword?: string) => {
+    const inputKeyword = overrideKeyword ?? keyword;
+    if (!inputKeyword.trim()) return;
+
+    if (audioUrl && isBlobUrl) {
+      URL.revokeObjectURL(audioUrl);
+    }
+    setAudioUrl(null);
+    setIsBlobUrl(false);
+    clearProgressResetTimer();
+    setError("");
+    setUsedRetryPrompt(false);
+    setGeneratedModel(null);
+    setResultVocalMode(null);
+    setLoading(true);
+    setProgressPercent(0);
+
+    try {
+      const res = await fetch("/api/generate-music", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          keyword: inputKeyword.trim(),
+          mode: mode === "long" ? "long" : "short",
+          vocalMode,
+          lyrics: lyrics.trim(),
+          lyricsLanguage,
+        }),
+      });
+      const data = await readApiJson<{
+        audioUrl?: string;        // Blob URL (서버에서 업로드 성공 시)
+        audioBase64?: string;     // Base64 폴백 (BLOB_READ_WRITE_TOKEN 없을 때)
+        audioMimeType?: string;
+        promptUsed: string;
+        koreanInput: string;
+        usedRetryPrompt?: boolean;
+        model?: string;
+        vocalMode?: VocalMode;
+      }>(res);
+
+      stopProgressTimer();
+      setProgressPercent(100);
+
+      const mime = (data.audioMimeType as string) || "audio/wav";
+      let url: string;
+      let isObjUrl = false;
+
+      if (data.audioUrl) {
+        // Vercel Blob URL — revokeObjectURL 불필요
+        url = data.audioUrl;
+      } else if (data.audioBase64) {
+        // Base64 폴백 → ObjectURL 생성
+        const binaryStr = atob(data.audioBase64);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: mime });
+        url = URL.createObjectURL(blob);
+        isObjUrl = true;
+      } else {
+        throw new Error("서버에서 오디오 데이터가 반환되지 않았습니다.");
+      }
+
+      setAudioUrl(url);
+      setIsBlobUrl(isObjUrl);
+      setAudioMimeType(mime);
+      setPromptUsed(data.promptUsed);
+      setKoreanInput(data.koreanInput);
+      setUsedRetryPrompt(Boolean(data.usedRetryPrompt));
+      setGeneratedModel(data.model === "lyria3pro" ? "lyria3pro" : "lyria2");
+      setResultVocalMode(
+        data.vocalMode === "vocals" || data.vocalMode === "instrumental"
+          ? data.vocalMode
+          : vocalMode
+      );
+    } catch (err: unknown) {
+      stopProgressTimer();
+      setProgressPercent(0);
+      setError(err instanceof Error ? err.message : "음악 생성 중 오류가 발생했습니다.");
+    } finally {
+      setLoading(false);
+      clearProgressResetTimer();
+      progressResetTimerRef.current = setTimeout(() => setProgressPercent(0), 600);
+    }
+  };
+
+  const handleKeywordClick = (kw: string) => {
+    setKeyword(kw);
+    handleGenerate(kw);
+  };
+
+  const handleDownload = () => {
+    if (!audioUrl) return;
+    const ext = extensionForMime(audioMimeType);
+    const a = document.createElement("a");
+    a.href = audioUrl;
+    a.download = `chungmu_${Date.now()}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const barWidth = `${Math.round(Math.min(100, progressPercent))}%`;
+
+  /** 서버에서 Lyria에 넣는 프롬프트와 동일(재시도 전) */
+  const promptPreview = useMemo(() => {
+    const k = keyword.trim();
+    if (!k) return null;
+    if (mode === "long" && vocalMode === "vocals") {
+      return buildVocalPromptPreview(k, lyrics, lyricsLanguage);
+    }
+    if (mode === "long") {
+      return mapKoreanToEnglishPromptForPro(k, vocalMode);
+    }
+    return mapKoreanToEnglishPrompt(k, vocalMode);
+  }, [keyword, mode, vocalMode, lyrics, lyricsLanguage]);
+
+  return (
+    <section className="text-zinc-200">
+      {/* 생성 모드: 짧은 음악 / 긴·고퀄 */}
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
+        <span className="text-xs font-semibold text-zinc-400 shrink-0">생성 모드</span>
+        <div className="flex rounded-lg overflow-hidden border border-zinc-600 bg-zinc-900/80 p-0.5">
+          <button
+            type="button"
+            onClick={() => setMode("short")}
+            disabled={loading}
+            className={`flex-1 sm:flex-none px-4 py-2 text-xs font-bold rounded-md transition-colors ${
+              mode === "short"
+                ? "bg-[#4764e6] text-white shadow"
+                : "text-zinc-400 hover:text-white"
+            }`}
+          >
+            짧은 음악 (~30초)
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("long")}
+            disabled={loading}
+            className={`flex-1 sm:flex-none px-4 py-2 text-xs font-bold rounded-md transition-colors ${
+              mode === "long"
+                ? "bg-[#4764e6] text-white shadow"
+                : "text-zinc-400 hover:text-white"
+            }`}
+          >
+            긴·고퀄
+          </button>
+        </div>
+      </div>
+
+      {/* 보컬: 긍정 프롬프트만 사용 (제거/부정 문구 없음) */}
+      <div className="flex flex-col sm:flex-row sm:items-start gap-3 mb-4">
+        <span className="pt-2 text-xs font-semibold text-zinc-400 shrink-0">믹스</span>
+        <div className="flex flex-col gap-2">
+          <div className="flex rounded-lg overflow-hidden border border-zinc-600 bg-zinc-900/80 p-0.5">
+            <button
+              type="button"
+              onClick={() => setVocalMode("instrumental")}
+              disabled={loading}
+              className={`flex-1 sm:flex-none px-4 py-2 text-xs font-bold rounded-md transition-colors ${
+                vocalMode === "instrumental"
+                  ? "bg-[#4764e6] text-white shadow"
+                  : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              악기만
+            </button>
+            <button
+              type="button"
+              onClick={() => setVocalMode("vocals")}
+              disabled={loading}
+              className={`flex-1 sm:flex-none px-4 py-2 text-xs font-bold rounded-md transition-colors ${
+                vocalMode === "vocals"
+                  ? "bg-[#4764e6] text-white shadow"
+                  : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              보컬 O
+            </button>
+          </div>
+          {vocalMode === "vocals" && mode !== "long" && (
+            <p className="text-[11px] text-amber-400/90">
+              한국어 보컬은 <strong>긴·고퀄 (Lyria 3 Pro)</strong> 모드를 권장합니다.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {vocalMode === "vocals" && (
+        <div className="mb-4 space-y-3">
+          {/* 언어 선택 */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <span className="text-xs font-semibold text-zinc-400 shrink-0">보컬 언어</span>
+            <div className="flex rounded-lg overflow-hidden border border-zinc-600 bg-zinc-900/80 p-0.5">
+              <button
+                type="button"
+                onClick={() => setLyricsLanguage("ko")}
+                disabled={loading}
+                className={`flex-1 sm:flex-none px-4 py-2 text-xs font-bold rounded-md transition-colors ${
+                  lyricsLanguage === "ko"
+                    ? "bg-[#4764e6] text-white shadow"
+                    : "text-zinc-400 hover:text-white"
+                }`}
+              >
+                한국어 보컬
+              </button>
+              <button
+                type="button"
+                onClick={() => setLyricsLanguage("en")}
+                disabled={loading}
+                className={`flex-1 sm:flex-none px-4 py-2 text-xs font-bold rounded-md transition-colors ${
+                  lyricsLanguage === "en"
+                    ? "bg-[#4764e6] text-white shadow"
+                    : "text-zinc-400 hover:text-white"
+                }`}
+              >
+                영어 보컬
+              </button>
+            </div>
+          </div>
+
+          {/* 가사 입력 */}
+          <div>
+            <label className="mb-2 block text-xs font-semibold text-zinc-400">
+              {lyricsLanguage === "ko" ? "한국어 가사" : "English Lyrics"}{" "}
+              <span className="font-normal text-zinc-500">(비워두면 기본 가사 자동 적용)</span>
+            </label>
+            <textarea
+              value={lyrics}
+              onChange={(e) => setLyrics(e.target.value)}
+              placeholder={
+                lyricsLanguage === "ko" ? DEFAULT_KO_PLACEHOLDER : DEFAULT_EN_PLACEHOLDER
+              }
+              disabled={loading}
+              rows={7}
+              className="min-h-36 w-full rounded border border-zinc-600 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-[#4764e6] focus:ring-1 focus:ring-[#4764e6] resize-y"
+            />
+            <p className="mt-1 text-[11px] text-zinc-500">
+              {lyricsLanguage === "ko"
+                ? "한국어 보컬을 원하면 가사를 직접 넣는 것이 가장 안정적입니다."
+                : "For best results, provide English lyrics directly."}{" "}
+              {mode !== "long" && (
+                <span className="text-amber-400/80">짧은 클립 모드에서는 효과가 제한적입니다.</span>
+              )}
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="flex gap-2 mb-4">
+        <input
+          type="text"
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleGenerate()}
+          placeholder="분위기·감정 키워드"
+          className="flex-1 rounded border border-zinc-600 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-[#4764e6] focus:ring-1 focus:ring-[#4764e6]"
+          disabled={loading}
+        />
+        <button
+          onClick={() => handleGenerate()}
+          disabled={loading || !keyword.trim()}
+          className="rounded bg-[#4764e6] px-5 py-2 text-sm font-bold text-white hover:bg-[#5a75ea] disabled:opacity-50 whitespace-nowrap transition-colors"
+        >
+          {loading ? "생성 중..." : "생성"}
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-4">
+        {EXAMPLE_KEYWORDS.map((kw) => (
+          <button
+            key={kw}
+            onClick={() => handleKeywordClick(kw)}
+            disabled={loading}
+            className="rounded-full border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:border-[#4764e6] hover:text-white disabled:opacity-40 transition-colors"
+          >
+            {kw}
+          </button>
+        ))}
+      </div>
+
+      <div className="mb-5 rounded border border-zinc-600 bg-zinc-950/60 p-3">
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+          Lyria 프롬프트 · 미리보기
+        </p>
+        {promptPreview ? (
+          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-zinc-700 bg-black/40 p-2.5 text-xs leading-relaxed text-[#9cb0f5]">
+            {promptPreview}
+          </pre>
+        ) : (
+          <p className="rounded border border-dashed border-zinc-700 bg-black/20 px-2 py-3 text-center text-xs text-zinc-500">
+            키워드를 입력하면 위와 같은 규칙으로 변환된 프롬프트가 여기에 표시됩니다.
+          </p>
+        )}
+      </div>
+
+      {loading && (
+        <div className="mb-4 rounded border border-zinc-600 bg-zinc-900/80 p-4">
+          <div className="mb-2 flex items-center justify-between text-xs font-medium text-[#4764e6]">
+            <span>생성 중 · {mode === "short" ? "짧은 음악" : "긴·고퀄"}</span>
+            <span className="tabular-nums">{Math.round(Math.min(100, progressPercent))}%</span>
+          </div>
+          <div
+            className="h-3 w-full overflow-hidden rounded-full border border-zinc-600 bg-zinc-800"
+            role="progressbar"
+            aria-valuenow={Math.round(Math.min(100, progressPercent))}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-[#4764e6] to-[#7c94f0] transition-[width] duration-150 ease-out"
+              style={{ width: barWidth }}
+            />
+          </div>
+        </div>
+      )}
+
+      {error && !loading && (
+        <div className="mb-4 rounded border border-red-800/80 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+          <span className="font-semibold">오류:</span> {error}
+        </div>
+      )}
+
+      {audioUrl && !loading && (
+        <div className="space-y-3 rounded border border-zinc-600 bg-zinc-900/50 p-4">
+          {usedRetryPrompt && (
+            <div className="rounded border border-amber-800/80 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
+              첫 프롬프트가 정책으로 차단되어 중립 프롬프트로 재생성했습니다.
+            </div>
+          )}
+          <div className="space-y-1 text-xs text-zinc-400">
+            <p>
+              <span className="font-semibold text-zinc-200">입력:</span> {koreanInput}
+            </p>
+            <p>
+              <span className="font-semibold text-zinc-200">생성 모드:</span>{" "}
+              {generatedModel === "lyria3pro" ? "긴·고퀄" : "짧은 음악 (~30초)"}
+            </p>
+            {resultVocalMode && (
+              <p>
+                <span className="font-semibold text-zinc-200">믹스:</span>{" "}
+                {resultVocalMode === "vocals" ? "보컬 O" : "악기만"}
+              </p>
+            )}
+          </div>
+          <div className="rounded border border-zinc-600 bg-black/30 p-2 text-xs text-zinc-400">
+            <code className="block break-all text-[#7c94f0]">{promptUsed}</code>
+          </div>
+
+          <audio ref={audioRef} controls src={audioUrl} className="w-full" autoPlay />
+
+          <button
+            onClick={handleDownload}
+            className="w-full rounded bg-emerald-700 py-2 text-sm font-semibold text-white hover:bg-emerald-600 transition-colors"
+          >
+            다운로드 ({extensionForMime(audioMimeType).toUpperCase()})
+          </button>
+        </div>
+      )}
+
+      {!audioUrl && !loading && !error && (
+        <div className="py-12 text-center text-sm text-zinc-500">
+          <p className="mb-3 text-4xl">🎼</p>
+          <p>키워드와 모드를 선택한 뒤 생성하세요</p>
+        </div>
+      )}
+    </section>
+  );
+}
