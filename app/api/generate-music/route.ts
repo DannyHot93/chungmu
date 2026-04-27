@@ -41,11 +41,12 @@ async function uploadAudioToBlob(
   try {
     const ext = mimeType.includes("mp3") || mimeType.includes("mpeg") ? "mp3" : "wav";
     const bytes = Buffer.from(base64, "base64");
-    const { url } = await put(`chungmu-audio/${slug}.${ext}`, bytes, {
+    const { url, pathname } = await put(`chungmu-audio/${slug}.${ext}`, bytes, {
       access: "public",
       contentType: mimeType,
       addRandomSuffix: true,
     });
+    console.log(`[generate-music] Blob 업로드 성공 pathname=${pathname}`);
     return url;
   } catch (err) {
     console.warn("[generate-music] Blob 업로드 실패, Base64 폴백:", err);
