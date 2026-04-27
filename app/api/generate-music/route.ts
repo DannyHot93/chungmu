@@ -206,7 +206,7 @@ export async function POST(request: NextRequest) {
       mimeType = "audio/wav";
       promptUsed = result.promptUsed;
       koreanInput = result.koreanInput;
-      usedRetryPrompt = result.usedRetryPrompt;
+      usedRetryPrompt = result.usedRetryPrompt ?? false;
       model = "lyria2";
     }
 
