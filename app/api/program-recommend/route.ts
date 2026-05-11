@@ -11,10 +11,24 @@ import { generateProgramRecommendation } from "@/lib/geminiLlm";
 import { runAiFirstMusicSearchOne } from "@/lib/musicSearch";
 import {
   dedupeYouTubeVideosById,
+  isoDurationToSeconds,
+  looksLikePlaylistOrCompilationSnippet,
   looksLikePlaylistTitle,
   searchYouTube,
 } from "@/lib/youtube";
-import type { ProgramCondition, SongRecommendation } from "@/types";
+import type { ProgramCondition, SongRecommendation, YouTubeVideo } from "@/types";
+
+const FALLBACK_SINGLE_MIN_SEC = 25;
+const FALLBACK_SINGLE_MAX_SEC = 900;
+
+function filterSingleTrackFallback(videos: YouTubeVideo[]): YouTubeVideo[] {
+  return dedupeYouTubeVideosById(videos).filter((v) => {
+    const sec = isoDurationToSeconds(v.duration);
+    if (sec < FALLBACK_SINGLE_MIN_SEC || sec > FALLBACK_SINGLE_MAX_SEC) return false;
+    if (looksLikePlaylistOrCompilationSnippet(v.title, v.description)) return false;
+    return true;
+  });
+}
 
 function buildSlotSearchKeyword(condition: ProgramCondition, rec: SongRecommendation): string {
   const parts = [
@@ -44,7 +58,7 @@ async function resolveSlotAgainstUsed(
     if (vid && usedVideoIds.has(vid)) {
       try {
         const candidates = await searchYouTube(kw, 10);
-        const alt = candidates.find(
+        const alt = filterSingleTrackFallback(candidates).find(
           (c) => !usedVideoIds.has(c.id) && !looksLikePlaylistTitle(c.title)
         );
         if (alt) {
@@ -93,7 +107,7 @@ async function resolveSlotAgainstUsed(
     }
     try {
       const more = await searchYouTube(kw, 10);
-      const pick = more.find(
+      const pick = filterSingleTrackFallback(more).find(
         (c) => !usedVideoIds.has(c.id) && !looksLikePlaylistTitle(c.title)
       );
       if (pick) {
@@ -153,9 +167,10 @@ export async function POST(request: NextRequest) {
         if (rec.searchKeyword?.trim()) {
           try {
             const results = await searchYouTube(rec.searchKeyword.trim(), 5);
+            const filtered = filterSingleTrackFallback(results);
             return {
               ...rec,
-              youtubeResults: dedupeYouTubeVideosById(results),
+              youtubeResults: filtered,
             };
           } catch (ytErr) {
             console.warn(

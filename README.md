@@ -41,8 +41,6 @@ npm run build
 - `GOOGLE_CLOUD_PROJECT_ID`
 - `GOOGLE_CLOUD_LOCATION`
 - `GEMINI_API_KEY` 또는 `GOOGLE_AI_STUDIO_API_KEY` (선곡·기획 LLM, Lyria 3 Pro 등)
-- `SPOTIFY_CLIENT_ID` 선택
-- `SPOTIFY_CLIENT_SECRET` 선택
 
 **짧은 음악(Lyria 2 · Vertex AI)** 은 Google Cloud 자격 증명이 필요합니다.
 
@@ -64,7 +62,7 @@ IAM에서 서비스 계정에 **Vertex AI User**(`roles/aiplatform.user`) 등 Ve
 - `lib/youtube.ts`: YouTube API 호출과 길이 처리
 - `lib/lyria.ts`: Lyria 2 호출
 - `lib/lyria3Gemini.ts`: Lyria 3 Pro Preview 호출
-- `lib/musicDiscovery.ts`: 최신/연도 의도 파악과 Spotify 후보 수집
+- `lib/musicDiscovery.ts`: 최신/연도 의도 파악
 
 ## Notes
 

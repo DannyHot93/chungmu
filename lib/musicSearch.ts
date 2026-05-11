@@ -78,7 +78,7 @@ export async function runAiFirstMusicSearch(keyword: string): Promise<MusicSearc
 
   const list = await runMoodTrackPipeline(keyword, { maxFinal });
   const result = dedupeMusicSearchResults(list);
-  pipelineCacheSet(keyword, maxFinal, result);
+  if (result.length > 0) pipelineCacheSet(keyword, maxFinal, result);
   return result;
 }
 
@@ -99,7 +99,7 @@ export async function runAiFirstMusicSearchOne(
   }
 
   const list = await runMoodTrackPipeline(trimmed, { maxFinal });
-  pipelineCacheSet(trimmed, maxFinal, list);
+  if (list.length > 0) pipelineCacheSet(trimmed, maxFinal, list);
   const result = list[0];
   if (!result) return null;
   if (!result.video) {

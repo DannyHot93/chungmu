@@ -28,6 +28,18 @@ Carrying us where we belong`;
 
 type Mode = "short" | "long";
 
+type GeneratedTrack = {
+  id: string;
+  audioUrl: string;
+  audioMimeType: string;
+  promptUsed: string;
+  koreanInput: string;
+  usedRetryPrompt: boolean;
+  generatedModel: "lyria2" | "lyria3pro";
+  resultVocalMode: VocalMode;
+  isBlobUrl: boolean;
+};
+
 const EXAMPLE_KEYWORDS = [
   "차분하고 잔잔한 배경",
   "몽환적인 새벽 분위기",
@@ -74,20 +86,14 @@ export default function GenerateSection() {
   const [lyricsLanguage, setLyricsLanguage] = useState<LyricsLanguage>("ko");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [audioMimeType, setAudioMimeType] = useState<string>("audio/wav");
-  const [promptUsed, setPromptUsed] = useState("");
-  const [koreanInput, setKoreanInput] = useState("");
-  const [usedRetryPrompt, setUsedRetryPrompt] = useState(false);
-  const [generatedModel, setGeneratedModel] = useState<"lyria2" | "lyria3pro" | null>(null);
-  const [resultVocalMode, setResultVocalMode] = useState<VocalMode | null>(null);
+  const [generatedTracks, setGeneratedTracks] = useState<GeneratedTrack[]>([]);
   const [progressPercent, setProgressPercent] = useState(0);
 
-  const audioRef = useRef<HTMLAudioElement>(null);
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const progressResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadStartedAtRef = useRef<number>(0);
   const modeRef = useRef<Mode>("short");
+  const blobUrlsRef = useRef<string[]>([]);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -138,32 +144,18 @@ export default function GenerateSection() {
     };
   }, [clearProgressResetTimer, stopProgressTimer]);
 
-  // Blob URL은 revokeObjectURL 대상이 아님 — 외부 URL 구분을 위해 플래그 추가
-  const [isBlobUrl, setIsBlobUrl] = useState(false);
-
   useEffect(() => {
     return () => {
-      if (audioUrl && isBlobUrl) {
-        URL.revokeObjectURL(audioUrl);
-      }
+      blobUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      blobUrlsRef.current = [];
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioUrl]);
+  }, []);
 
-  const handleGenerate = async (overrideKeyword?: string) => {
-    const inputKeyword = overrideKeyword ?? keyword;
-    if (!inputKeyword.trim()) return;
+  const handleGenerate = async () => {
+    if (!keyword.trim()) return;
 
-    if (audioUrl && isBlobUrl) {
-      URL.revokeObjectURL(audioUrl);
-    }
-    setAudioUrl(null);
-    setIsBlobUrl(false);
     clearProgressResetTimer();
     setError("");
-    setUsedRetryPrompt(false);
-    setGeneratedModel(null);
-    setResultVocalMode(null);
     loadStartedAtRef.current = Date.now();
     setLoading(true);
     setProgressPercent(0);
@@ -177,7 +169,7 @@ export default function GenerateSection() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          keyword: inputKeyword.trim(),
+          keyword: keyword.trim(),
           mode: mode === "long" ? "long" : "short",
           vocalMode,
           lyrics: lyrics.trim(),
@@ -216,22 +208,27 @@ export default function GenerateSection() {
         const blob = new Blob([bytes], { type: mime });
         url = URL.createObjectURL(blob);
         isObjUrl = true;
+        blobUrlsRef.current.push(url);
       } else {
         throw new Error("서버에서 오디오 데이터가 반환되지 않았습니다.");
       }
 
-      setAudioUrl(url);
-      setIsBlobUrl(isObjUrl);
-      setAudioMimeType(mime);
-      setPromptUsed(data.promptUsed);
-      setKoreanInput(data.koreanInput);
-      setUsedRetryPrompt(Boolean(data.usedRetryPrompt));
-      setGeneratedModel(data.model === "lyria3pro" ? "lyria3pro" : "lyria2");
-      setResultVocalMode(
-        data.vocalMode === "vocals" || data.vocalMode === "instrumental"
-          ? data.vocalMode
-          : vocalMode
-      );
+      const track: GeneratedTrack = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        audioUrl: url,
+        audioMimeType: mime,
+        promptUsed: data.promptUsed,
+        koreanInput: data.koreanInput,
+        usedRetryPrompt: Boolean(data.usedRetryPrompt),
+        generatedModel: data.model === "lyria3pro" ? "lyria3pro" : "lyria2",
+        resultVocalMode:
+          data.vocalMode === "vocals" || data.vocalMode === "instrumental"
+            ? data.vocalMode
+            : vocalMode,
+        isBlobUrl: isObjUrl,
+      };
+
+      setGeneratedTracks((prev) => [track, ...prev]);
     } catch (err: unknown) {
       stopProgressTimer();
       setProgressPercent(0);
@@ -252,14 +249,12 @@ export default function GenerateSection() {
 
   const handleKeywordClick = (kw: string) => {
     setKeyword(kw);
-    handleGenerate(kw);
   };
 
-  const handleDownload = () => {
-    if (!audioUrl) return;
-    const ext = extensionForMime(audioMimeType);
+  const handleDownload = (track: GeneratedTrack) => {
+    const ext = extensionForMime(track.audioMimeType);
     const a = document.createElement("a");
-    a.href = audioUrl;
+    a.href = track.audioUrl;
     a.download = `chungmu_${Date.now()}.${ext}`;
     document.body.appendChild(a);
     a.click();
@@ -459,44 +454,62 @@ export default function GenerateSection() {
         </div>
       )}
 
-      {audioUrl && !loading && (
-        <div className="space-y-3 rounded border border-zinc-600 bg-zinc-900/50 p-4">
-          {usedRetryPrompt && (
-            <div className="rounded border border-amber-800/80 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
-              첫 프롬프트가 정책으로 차단되어 중립 프롬프트로 재생성했습니다.
-            </div>
-          )}
-          <div className="space-y-1 text-xs text-zinc-400">
-            <p>
-              <span className="font-semibold text-zinc-200">입력:</span> {koreanInput}
-            </p>
-            <p>
-              <span className="font-semibold text-zinc-200">생성 모드:</span>{" "}
-              {generatedModel === "lyria3pro" ? "긴·고퀄" : "짧은 음악 (~30초)"}
-            </p>
-            {resultVocalMode && (
-              <p>
-                <span className="font-semibold text-zinc-200">믹스:</span>{" "}
-                {resultVocalMode === "vocals" ? "보컬 O" : "악기만"}
-              </p>
-            )}
-          </div>
-          <div className="rounded border border-zinc-600 bg-black/30 p-2 text-xs text-zinc-400">
-            <code className="block break-all text-[#7c94f0]">{promptUsed}</code>
-          </div>
+      {generatedTracks.length > 0 && !loading && (
+        <div className="space-y-3">
+          <p className="text-xs font-medium text-zinc-500">
+            생성된 음악 {generatedTracks.length}개
+          </p>
+          <ol className="m-0 list-none space-y-3 p-0">
+            {generatedTracks.map((track, index) => (
+              <li
+                key={track.id}
+                className="space-y-3 rounded border border-zinc-600 bg-zinc-900/50 p-4"
+              >
+                {track.usedRetryPrompt && (
+                  <div className="rounded border border-amber-800/80 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
+                    첫 프롬프트가 정책으로 차단되어 중립 프롬프트로 재생성했습니다.
+                  </div>
+                )}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1 text-xs text-zinc-400">
+                    <p>
+                      <span className="font-semibold text-zinc-200">입력:</span>{" "}
+                      {track.koreanInput}
+                    </p>
+                    <p>
+                      <span className="font-semibold text-zinc-200">생성 모드:</span>{" "}
+                      {track.generatedModel === "lyria3pro"
+                        ? "긴·고퀄"
+                        : "짧은 음악 (~30초)"}
+                    </p>
+                    <p>
+                      <span className="font-semibold text-zinc-200">믹스:</span>{" "}
+                      {track.resultVocalMode === "vocals" ? "보컬 O" : "악기만"}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded-full border border-zinc-700 px-2 py-1 text-[11px] font-semibold text-zinc-400">
+                    #{generatedTracks.length - index}
+                  </span>
+                </div>
+                <div className="rounded border border-zinc-600 bg-black/30 p-2 text-xs text-zinc-400">
+                  <code className="block break-all text-[#7c94f0]">{track.promptUsed}</code>
+                </div>
 
-          <audio ref={audioRef} controls src={audioUrl} className="w-full" autoPlay />
+                <audio controls src={track.audioUrl} className="w-full" autoPlay={index === 0} />
 
-          <button
-            onClick={handleDownload}
-            className="w-full rounded bg-emerald-700 py-2 text-sm font-semibold text-white hover:bg-emerald-600 transition-colors"
-          >
-            다운로드 ({extensionForMime(audioMimeType).toUpperCase()})
-          </button>
+                <button
+                  onClick={() => handleDownload(track)}
+                  className="w-full rounded bg-emerald-700 py-2 text-sm font-semibold text-white hover:bg-emerald-600 transition-colors"
+                >
+                  다운로드 ({extensionForMime(track.audioMimeType).toUpperCase()})
+                </button>
+              </li>
+            ))}
+          </ol>
         </div>
       )}
 
-      {!audioUrl && !loading && !error && (
+      {generatedTracks.length === 0 && !loading && !error && (
         <div className="py-12 text-center text-sm text-zinc-500">
           <p className="mb-3 text-4xl">🎼</p>
           <p>키워드와 모드를 선택한 뒤 생성하세요</p>

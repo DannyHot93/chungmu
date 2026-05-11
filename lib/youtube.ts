@@ -198,6 +198,10 @@ type SearchSnippetOnly = {
 };
 
 const MOOD_SEARCH_CACHE_PREFIX = "moodQ:";
+type SearchListVideosOnlyOptions = {
+  order?: "relevance" | "date";
+  publishedAfter?: string;
+};
 
 /**
  * search.list만 수행 (type=video, Music). duration 없음.
@@ -205,12 +209,18 @@ const MOOD_SEARCH_CACHE_PREFIX = "moodQ:";
  */
 export async function searchListVideosOnly(
   query: string,
-  maxResults: number
+  maxResults: number,
+  options: SearchListVideosOnlyOptions = {}
 ): Promise<SearchSnippetOnly[]> {
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) throw new Error("YOUTUBE_API_KEY 환경변수가 설정되지 않았습니다.");
 
-  const key = searchListKey(`${MOOD_SEARCH_CACHE_PREFIX}${query}`, maxResults);
+  const order = options.order ?? "relevance";
+  const publishedAfter = options.publishedAfter ?? "";
+  const key = searchListKey(
+    `${MOOD_SEARCH_CACHE_PREFIX}${order}:${publishedAfter}:${query}`,
+    maxResults
+  );
   const hit = cacheGet<SearchSnippetOnly[]>(key);
   if (hit) return hit;
 
@@ -219,6 +229,10 @@ export async function searchListVideosOnly(
   searchUrl.searchParams.set("q", query);
   searchUrl.searchParams.set("type", "video");
   searchUrl.searchParams.set("maxResults", String(maxResults));
+  searchUrl.searchParams.set("order", order);
+  if (publishedAfter) {
+    searchUrl.searchParams.set("publishedAfter", publishedAfter);
+  }
   searchUrl.searchParams.set("videoCategoryId", "10");
   searchUrl.searchParams.set("key", apiKey);
 

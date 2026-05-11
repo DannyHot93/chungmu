@@ -44,9 +44,8 @@ export default function SearchSection() {
   const [error, setError] = useState("");
   const [playing, setPlaying] = useState<YouTubeVideo | null>(null);
 
-  const handleSearch = async (overrideQuery?: string) => {
-    const searchQuery = overrideQuery ?? query;
-    if (!searchQuery.trim()) return;
+  const handleSearch = async () => {
+    if (!query.trim()) return;
 
     setLoading(true);
     setError("");
@@ -56,7 +55,7 @@ export default function SearchSection() {
       const res = await fetch("/api/search-music", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ q: searchQuery.trim() }),
+        body: JSON.stringify({ q: query.trim() }),
       });
       const data = await readApiJson<{ results?: MusicSearchResultItem[] }>(res);
       const list = data.results ?? [];
@@ -73,7 +72,6 @@ export default function SearchSection() {
 
   const handleKeywordClick = (kw: string) => {
     setQuery(kw);
-    handleSearch(kw);
   };
 
   const tag = detectTag(query);

@@ -4,12 +4,21 @@
 // ======================================================
 
 const TAVILY_URL = "https://api.tavily.com/search";
+const TAVILY_CACHE_TTL_MS = 30 * 60 * 1000;
+const TAVILY_CACHE_MAX_KEYS = 120;
 
 export interface TavilyResultItem {
   title: string;
   url: string;
   content: string;
 }
+
+type TavilyCacheEntry = {
+  expiry: number;
+  value: TavilyResultItem[];
+};
+
+const tavilyCache = new Map<string, TavilyCacheEntry>();
 
 function getTavilyApiKey(): string {
   const k = process.env.TAVILY_API_KEY?.trim() ?? "";
@@ -26,13 +35,18 @@ export async function tavilySearch(
   query: string,
   maxResults = 8
 ): Promise<TavilyResultItem[]> {
+  const cacheKey = `${maxResults}:${query.trim().toLowerCase()}`;
+  const cached = tavilyCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiry) return cached.value;
+  if (cached) tavilyCache.delete(cacheKey);
+
   const res = await fetch(TAVILY_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       api_key: getTavilyApiKey(),
       query: query.trim(),
-      search_depth: "advanced",
+      search_depth: "basic",
       max_results: maxResults,
       include_answer: false,
     }),
@@ -59,5 +73,13 @@ export async function tavilySearch(
       content: String(o.content ?? ""),
     });
   }
+  if (tavilyCache.size >= TAVILY_CACHE_MAX_KEYS) {
+    const oldest = tavilyCache.keys().next().value;
+    if (oldest !== undefined) tavilyCache.delete(oldest);
+  }
+  tavilyCache.set(cacheKey, {
+    expiry: Date.now() + TAVILY_CACHE_TTL_MS,
+    value: out,
+  });
   return out;
 }
