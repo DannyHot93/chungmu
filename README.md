@@ -38,6 +38,8 @@ npm run build
 아래 값들이 필요합니다.
 
 - `YOUTUBE_API_KEY`
+- `LASTFM_API_KEY` (선택, 무료 DB 기반 분위기 후보 보강)
+- `MUSICBRAINZ_USER_AGENT` (선택, MusicBrainz 요청 식별자)
 - `GOOGLE_CLOUD_PROJECT_ID`
 - `GOOGLE_CLOUD_LOCATION`
 - `GEMINI_API_KEY` 또는 `GOOGLE_AI_STUDIO_API_KEY` (선곡·기획 LLM, Lyria 3 Pro 등)

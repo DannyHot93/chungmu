@@ -185,6 +185,16 @@ export function looksLikePlaylistOrCompilationSnippet(
   if (/\bcontinuous\b|hours?\s*of|loop/i.test(c)) return true;
   if (/\d{1,2}:\d{2}:\d{2}.*(playlist|mix|album)/i.test(c)) return true;
   if (description.length > 400 && /subscribe|tracklist|00:00.*00:/i.test(c)) return true;
+  if (/color\s*coded|han\|rom\|eng|hangul,\s*romanization|lyrics?\s*\|/i.test(c)) return true;
+  if (/no copyright infringement intended|does not belong to me|all rights administered by/i.test(c)) {
+    return true;
+  }
+  if (/\bai\s*(music|song|cover|k-?pop)\b|aikpop|virtual\s+girl\s+group|i invented this/i.test(c)) {
+    return true;
+  }
+  if (/\b(analysis|review|reaction|breakdown|concept breakdown|explained)\b|리뷰|분석|해석|리액션/i.test(c)) {
+    return true;
+  }
   return false;
 }
 

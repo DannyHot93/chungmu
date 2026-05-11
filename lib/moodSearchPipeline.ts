@@ -14,6 +14,8 @@ import {
 import { tavilySearch } from "./tavily";
 import type { MusicSearchResultItem, YouTubeVideo } from "@/types";
 import { normalizeTrackKey, yearFromPublishedAt } from "./trackKey";
+import { collectFreeDbCandidates, type CandidateTrack } from "./freeMusicCandidates";
+import { resolveMusicIntent } from "./musicIntent";
 import {
   fetchYouTubeVideosFullByIds,
   isoDurationToSeconds,
@@ -37,6 +39,8 @@ type RawCandidate = {
   artist: string;
   title: string;
   youtubeUrl?: string;
+  sourceScore?: number;
+  tags?: string[];
 };
 
 type ClassRow = {
@@ -310,19 +314,24 @@ async function collectIdsWithNarrowSearch(
 
   const searchListCalls = { n: 0 };
   const lightSituation = hasLightSituationIntent(userInput);
+  const directSituationQueries = buildDirectSituationQueries(userInput, ctx);
   const orderedNoUrl = candidates.filter((c) => !c.youtubeUrl).slice(0, lightSituation ? 1 : 2);
 
   if (ctx.recencyIntent || ctx.keywordYears.length > 0) {
     const q = userInput.length > 60 ? userInput.slice(0, 60) : userInput;
     const currentYearPrefix =
       ctx.keywordYears.length > 0 ? `${recentYearWindow(ctx).maxYear} ` : "";
+    const compactRecentQuery =
+      /여자\s*아이돌|걸그룹|girl\s*group/i.test(userInput)
+        ? `${currentYearPrefix}K-pop girl group comeback official audio`
+        : `${currentYearPrefix}최신 신곡 ${q} 한국 K-pop official MV official audio`;
     const rows = await searchListVideosOnly(
-      `${currentYearPrefix}최신 신곡 ${q} 한국 K-pop official MV official audio`,
+      compactRecentQuery,
       8,
       {
         order: "date",
         publishedAfter:
-          ctx.keywordYears.length > 0 ? undefined : recentPublishedAfterIso(ctx, 12),
+          ctx.keywordYears.length > 0 ? undefined : recentPublishedAfterIso(ctx, 24),
       }
     );
     searchListCalls.n += 1;
@@ -331,8 +340,17 @@ async function collectIdsWithNarrowSearch(
     }
   }
 
-  if (lightSituation && searchListCalls.n < MAX_SEARCH_LIST_CALLS) {
-    const rows = await searchListVideosOnly(buildDirectSituationQueries(userInput, ctx)[0] ?? userInput, 5);
+  if (lightSituation) {
+    for (const directQuery of directSituationQueries.slice(0, 2)) {
+      if (searchListCalls.n >= MAX_SEARCH_LIST_CALLS) break;
+      const rows = await searchListVideosOnly(directQuery, 5);
+      searchListCalls.n += 1;
+      for (const row of rows) {
+        if (row.id) fromUrl.add(row.id);
+      }
+    }
+  } else if (!(ctx.recencyIntent || ctx.keywordYears.length > 0) && searchListCalls.n < MAX_SEARCH_LIST_CALLS) {
+    const rows = await searchListVideosOnly(directSituationQueries[0] ?? userInput, 5);
     searchListCalls.n += 1;
     for (const row of rows) {
       if (row.id) fromUrl.add(row.id);
@@ -471,7 +489,26 @@ function mergeClassRows(
 ): Map<string, ClassRow> {
   const merged = new Map(primary);
   for (const [id, row] of fallback) {
-    if (!merged.has(id)) merged.set(id, row);
+    const existing = merged.get(id);
+    if (!existing) {
+      merged.set(id, row);
+      continue;
+    }
+    const existingWeak =
+      existing.label !== "single" ||
+      !existing.isOfficialRelease ||
+      existing.confidenceScore < row.confidenceScore;
+    if (existingWeak && row.label === "single" && row.isOfficialRelease) {
+      merged.set(id, {
+        ...row,
+        reason: row.reason,
+        displayTitle: existing.displayTitle || row.displayTitle,
+        displayArtist: existing.displayArtist || row.displayArtist,
+        moodTags: existing.moodTags.length > 0 ? existing.moodTags : row.moodTags,
+        koreanDomestic: existing.koreanDomestic || row.koreanDomestic,
+        confidenceScore: Math.max(existing.confidenceScore, row.confidenceScore),
+      });
+    }
   }
   return merged;
 }
@@ -554,6 +591,64 @@ JSON만: { "items": [ { "videoId", "label", "isOfficialRelease", "koreanDomestic
 
 type Scored = { video: YouTubeVideo; row: ClassRow; rank: number };
 
+function freeDbToRawCandidates(candidates: CandidateTrack[]): RawCandidate[] {
+  return candidates.map((candidate) => ({
+    artist: candidate.artist,
+    title: candidate.title,
+    sourceScore: candidate.sourceScore,
+    tags: candidate.tags,
+  }));
+}
+
+function tokenIncludes(haystack: string, needle: string): boolean {
+  const n = needle
+    .toLowerCase()
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, " ")
+    .replace(/[^a-z0-9가-힣]+/g, " ")
+    .trim();
+  if (n.length < 2) return false;
+  return haystack.includes(n);
+}
+
+function buildCandidateBoost(video: YouTubeVideo, candidates: RawCandidate[]): number {
+  const haystack = `${video.title} ${video.channelTitle} ${video.description}`
+    .toLowerCase()
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, " ")
+    .replace(/[^a-z0-9가-힣]+/g, " ")
+    .trim();
+  let best = 0;
+  for (const candidate of candidates.slice(0, 8)) {
+    const titleHit = tokenIncludes(haystack, candidate.title);
+    const artistHit = tokenIncludes(haystack, candidate.artist);
+    if (!titleHit && !artistHit) continue;
+    const base = Math.max(0, Math.min(180_000, (candidate.sourceScore ?? 0) * 420));
+    const match = titleHit && artistHit ? 140_000 : 45_000;
+    best = Math.max(best, base + match);
+  }
+  return best;
+}
+
+function requestedMoodScore(userInput: string, row: ClassRow, video: YouTubeVideo): number {
+  const text = `${row.displayTitle} ${row.displayArtist} ${row.reason} ${row.moodTags.join(" ")} ${video.title}`.toLowerCase();
+  let score = 0;
+  if (/청량|시원|상큼|발랄|하이틴/.test(userInput) && /청량|시원|상큼|발랄|하이틴|refreshing|fresh/.test(text)) {
+    score += 160_000;
+  }
+  if (/웃긴|유쾌|밝|예능|코미디/.test(userInput) && /유쾌|밝|경쾌|신나는|코미디|upbeat|happy/.test(text)) {
+    score += 120_000;
+  }
+  if (/감성|비|새벽|퇴근|아련|잔잔/.test(userInput) && /감성|아련|잔잔|차분|라디오|chill|ballad|r&b/.test(text)) {
+    score += 120_000;
+  }
+  if (/긴장|뉴스|사건|예고/.test(userInput) && /긴장|진지|시네마틱|전자|electronic|cinematic/.test(text)) {
+    score += 120_000;
+  }
+  if (/비공식|unofficial|review|analysis|breakdown/.test(text)) {
+    score -= 180_000;
+  }
+  return score;
+}
+
 /** videoId + 정규화 가수·제목(다른 영상 중복) 제거, rank 높은 순이 이미 앞 */
 function dedupeScoredChampions(scored: Scored[]): Scored[] {
   const seenIds = new Set<string>();
@@ -633,20 +728,32 @@ export async function runMoodTrackPipeline(
   if (!korean) return [];
 
   const ctx = buildDiscoveryContext(korean);
-  const keywords = await expandKoreanToKeywords(korean);
-  let webBlob = "";
+  const intent = await resolveMusicIntent(korean);
+  let candidates: RawCandidate[] = [];
   try {
-    webBlob = await runTavilyToBlob(korean, keywords, ctx);
+    candidates = freeDbToRawCandidates(await collectFreeDbCandidates(korean, intent));
   } catch {
-    webBlob = "";
+    candidates = [];
   }
 
-  let candidates: RawCandidate[] = [];
-  if (webBlob.trim()) {
+  const keywords =
+    candidates.length === 0
+      ? await expandKoreanToKeywords(korean)
+      : [...intent.searchTags, ...intent.genreHints, ...intent.mood].slice(0, 10);
+  let webBlob = "";
+  if (candidates.length === 0) {
     try {
-      candidates = await parseCandidatesFromWeb(korean, keywords, webBlob, ctx);
+      webBlob = await runTavilyToBlob(korean, keywords, ctx);
     } catch {
-      candidates = [];
+      webBlob = "";
+    }
+
+    if (webBlob.trim()) {
+      try {
+        candidates = await parseCandidatesFromWeb(korean, keywords, webBlob, ctx);
+      } catch {
+        candidates = [];
+      }
     }
   }
 
@@ -687,6 +794,8 @@ export async function runMoodTrackPipeline(
       const rank =
         (row.koreanDomestic ? 1_000_000 : 0) +
         (row.isOfficialRelease ? 100_000 : 0) +
+        buildCandidateBoost(v, candidates) +
+        requestedMoodScore(korean, row, v) +
         recentUploadScore(v, ctx) +
         row.confidenceScore * 1_000;
       items.push({ video: v, row, rank });
